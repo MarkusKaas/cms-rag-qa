@@ -98,3 +98,23 @@ system prompt (framed for editorial/CMS Q&A) and the sample documents.
 - Use a proper task queue (Celery/ARQ) for large file ingestion
 - Implement re-ranking (Cohere Rerank or a cross-encoder) before passing to Claude
 - Add evaluation: track retrieval hit-rate and answer quality over time
+
+---
+
+### Update: TF-IDF instead of embeddings + ChromaDB
+
+**Decision:** Retrieval now uses scikit-learn `TfidfVectorizer` over a JSON chunk store. Sections 2–3
+above describe the original embedding/ChromaDB design and are kept for history.
+
+**Why:** `sentence-transformers` and ChromaDB pulled in PyTorch/ONNX, which had no Python 3.13 wheels
+at the time and made setup slow. TF-IDF installs in seconds and works well on the keyword-heavy
+technical docs this project targets.
+
+**Trade-off:** No semantic matching — "remove" won't match "delete". The full index is refit on every
+upload/delete, which is fine for hundreds of documents but not thousands. `retriever.py` remains the
+single seam for swapping in an embedding model or a managed vector DB.
+
+**Operational notes:** the in-memory index is guarded by a lock (FastAPI serves sync routes from a
+thread pool), the store is written atomically (temp file + `os.replace`), and the store path is
+resolved relative to `backend/` so it doesn't depend on the working directory.
+
