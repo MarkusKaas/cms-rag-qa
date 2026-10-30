@@ -26,8 +26,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from generator import generate_answer
-from ingest import delete_all_documents, ingest_file, list_documents
+from generator import generate_answer, MODEL, MAX_QUESTION_CHARS
+from ingest import delete_all_documents, delete_document, ingest_file, list_documents
 from retriever import retrieve
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -68,12 +68,20 @@ class UploadResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Returns service status plus active model and config — useful for verifying
+    what's running without digging into environment variables or logs."""
+    from ingest import _docs  # local import to avoid circular dependency at module level
+    return {
+        "status": "ok",
+        "model": MODEL,
+        "max_question_chars": MAX_QUESTION_CHARS,
+        "indexed_chunks": len(_docs),
+    }
 
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload(file: UploadFile = File(...)) -> UploadResponse:
-    """Upload a document and index it into ChromaDB."""
+    """Upload a document and index it into the TF-IDF store."""
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -105,6 +113,12 @@ def query(req: QueryRequest) -> QueryResponse:
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
+    if len(req.question) > MAX_QUESTION_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Question is {len(req.question):,} characters — limit is {MAX_QUESTION_CHARS:,}.",
+        )
+
     chunks = retrieve(req.question, top_k=req.top_k)
     result = generate_answer(req.question, chunks)
 
@@ -121,9 +135,18 @@ def documents() -> list[dict]:
     return list_documents()
 
 
+@app.delete("/documents/{doc_id}")
+def remove_document(doc_id: str) -> dict:
+    """Delete one document (and all its chunks) by doc_id."""
+    removed = delete_document(doc_id)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found.")
+    return {"message": f"Removed {removed} chunks for document '{doc_id}'.", "chunks_removed": removed}
+
+
 @app.delete("/documents")
 def clear_documents() -> dict:
-    """Delete all indexed documents from ChromaDB."""
+    """Delete all indexed documents from the TF-IDF store."""
     removed = delete_all_documents()
     return {"message": f"Removed {removed} chunks.", "chunks_removed": removed}
 
