@@ -1,6 +1,6 @@
 # CMS RAG Q&A
 
-A local Retrieval-Augmented Generation (RAG) system for querying CMS documentation and content. Upload `.txt`, `.md`, `.pdf`, or `.docx` files, then ask questions and get grounded, cited answers powered by **Claude** and **ChromaDB**.
+A local Retrieval-Augmented Generation (RAG) system for querying CMS documentation and content. Upload `.txt`, `.md`, `.pdf`, or `.docx` files, then ask questions and get grounded, cited answers powered by **Claude** and a local **TF-IDF** retrieval index.
 
 Built as part of a thesis on AI-in-CMS patterns — with Umbraco as the primary data source.
 
@@ -10,8 +10,8 @@ Built as part of a thesis on AI-in-CMS patterns — with Umbraco as the primary 
 
 | Layer      | Technology                             |
 |------------|----------------------------------------|
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` (local, free) |
-| Vector DB  | ChromaDB (local persistent)            |
+| Retrieval  | scikit-learn TF-IDF (1–2-grams) + cosine similarity |
+| Storage    | JSON file (`backend/docs_store.json`, atomic writes) |
 | Generation | Claude Haiku (`claude-haiku-4-5-20251001`) via Anthropic API |
 | Backend    | FastAPI + uvicorn                      |
 | Frontend   | Single-file HTML/CSS/JS (no build step) |
@@ -42,8 +42,6 @@ source .venv/bin/activate      # macOS / Linux
 ```bash
 pip install -r requirements.txt
 ```
-
-> First run downloads the `all-MiniLM-L6-v2` embedding model (~90 MB) and caches it locally.
 
 ### 4. Set up your API key
 
@@ -94,6 +92,7 @@ The FastAPI server exposes these endpoints (interactive docs at `/docs`):
 | `POST`   | `/query`      | Ask a question, get a cited answer  |
 | `GET`    | `/documents`  | List all indexed documents          |
 | `DELETE` | `/documents`  | Wipe all indexed documents          |
+| `DELETE` | `/documents/{doc_id}` | Remove a single document    |
 | `GET`    | `/health`     | Health check                        |
 
 ### Example: query via curl
@@ -112,11 +111,13 @@ curl -X POST http://localhost:8000/query \
 cms-rag-qa/
 ├── backend/
 │   ├── main.py         # FastAPI app, routes, static serving
-│   ├── ingest.py       # Extract → chunk → embed → store
-│   ├── retriever.py    # Semantic search (ChromaDB cosine)
+│   ├── ingest.py       # Extract → chunk → TF-IDF index → store (thread-safe)
+│   ├── retriever.py    # Retrieval entry point (swap point for a vector DB)
 │   └── generator.py    # Claude answer generation
 ├── frontend/
 │   └── index.html      # Single-file dark-theme UI
+├── tests/
+│   └── test_rag.py     # Offline tests (Claude stubbed, temp store)
 ├── sample_docs/
 │   └── umbraco_sample.md  # Test document (Umbraco reference)
 ├── .env.example
@@ -137,7 +138,26 @@ ANTHROPIC_API_KEY=sk-ant-...   # required
 CHUNK_SIZE=800                  # words per chunk
 CHUNK_OVERLAP=150               # overlap between chunks
 TOP_K=4                         # chunks retrieved per query
+MIN_SCORE=0.0                   # drop chunks at/below this similarity
+MAX_UPLOAD_MB=20                # reject larger uploads (413)
+CORS_ORIGINS=*                  # comma-separated; restrict when deploying
+GENERATOR_MODEL=claude-haiku-4-5-20251001
 ```
+
+`CHUNK_OVERLAP` must be smaller than `CHUNK_SIZE` — the app refuses to start otherwise.
+
+Re-uploading a file with the same name replaces the earlier version rather than indexing it twice.
+
+---
+
+## Tests
+
+```bash
+pip install pytest
+pytest
+```
+
+Claude is stubbed and the store is redirected to a temp file, so tests need no API key and never touch your data.
 
 ---
 
@@ -153,20 +173,21 @@ Extract text (.txt/.md/.pdf/.docx)
 Split into overlapping word chunks
      │
      ▼
-Embed chunks (all-MiniLM-L6-v2, local)
+Refit TF-IDF index over all chunks
      │
      ▼
-Store in ChromaDB (cosine similarity index)
+Persist chunks to docs_store.json
 
 ─────────────────────────────────────────
 
 User question
      │
      ▼
-Embed query (same model)
+Vectorise query (same TF-IDF vocabulary)
      │
      ▼
-Cosine search → top-k chunks
+Cosine similarity → top-k chunks
+(no relevant chunks → answer without calling Claude)
      │
      ▼
 Claude Haiku generates grounded answer

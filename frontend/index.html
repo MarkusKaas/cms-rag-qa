@@ -153,6 +153,14 @@
     .doc-item:hover { background: var(--bg2); }
     .doc-icon { font-size: .9rem; }
     .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .doc-meta { font-family: var(--mono); font-size: .62rem; color: var(--muted); opacity: .8; }
+    .doc-del {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: .9rem; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      opacity: 0; transition: opacity .15s, color .15s;
+    }
+    .doc-item:hover .doc-del, .doc-del:focus-visible { opacity: 1; }
+    .doc-del:hover { color: var(--red); }
     .doc-empty { font-size: .82rem; color: var(--muted); text-align: center; padding: 24px 0; }
 
     .clear-btn {
@@ -241,6 +249,19 @@
       border-radius: 2px 10px 10px 10px;
       white-space: pre-wrap;
     }
+    /* Rendered markdown in answers */
+    .message.assistant .bubble.md { white-space: normal; }
+    .bubble.md p { margin: 0 0 .6em; }
+    .bubble.md p:last-child, .bubble.md ul:last-child, .bubble.md ol:last-child { margin-bottom: 0; }
+    .bubble.md ul, .bubble.md ol { margin: 0 0 .6em; padding-left: 1.3em; }
+    .bubble.md li { margin: .15em 0; }
+    .bubble.md h4 { font-size: .92rem; margin: .4em 0 .3em; }
+    .bubble.md code {
+      font-family: var(--mono); font-size: .8em;
+      background: var(--bg3, rgba(255,255,255,.06)); padding: 1px 5px; border-radius: 4px;
+    }
+    .bubble.md .cite { color: var(--muted); font-size: .8em; }
+
     .message.assistant.error .bubble {
       border-color: rgba(248,81,73,.3);
       color: var(--red);
@@ -356,7 +377,7 @@
         <div class="dropzone-text">Drop a file or <span>browse</span></div>
         <div class="dropzone-types">.txt · .md · .pdf · .docx</div>
       </div>
-      <input type="file" id="file-input" accept=".txt,.md,.pdf,.docx" />
+      <input type="file" id="file-input" accept=".txt,.md,.pdf,.docx" multiple />
       <div class="upload-progress" id="upload-progress">Indexing…</div>
     </div>
 
@@ -429,20 +450,37 @@
 
   // ── Document list ───────────────────────────────────────────────────────────
   async function loadDocuments() {
-    const r    = await fetch(`${API}/documents`);
-    const docs = await r.json();
+    let docs = [];
+    try {
+      const r = await fetch(`${API}/documents`);
+      if (r.ok) docs = await r.json();
+    } catch { /* offline — fall through to empty state */ }
     if (!docs.length) {
       docList.innerHTML = '<div class="doc-empty">No documents yet</div>';
       return;
     }
+    // Filenames are user-controlled — always escape before inserting as HTML.
     docList.innerHTML = docs.map(d => `
       <div class="doc-item">
         <span class="doc-icon">${iconFor(d.source)}</span>
-        <span class="doc-name" title="${d.source}">${d.source}</span>
+        <span class="doc-name" title="${escHtml(d.source)}">${escHtml(d.source)}</span>
+        <span class="doc-meta">${d.chunks ?? ''}</span>
+        <button class="doc-del" data-id="${escHtml(d.doc_id)}" data-name="${escHtml(d.source)}"
+                title="Remove document" aria-label="Remove ${escHtml(d.source)}">×</button>
       </div>`).join('');
   }
 
+  docList.addEventListener('click', async e => {
+    const btn = e.target.closest('.doc-del');
+    if (!btn) return;
+    if (!confirm(`Remove "${btn.dataset.name}" from the index?`)) return;
+    const r = await fetch(`${API}/documents/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' });
+    if (!r.ok) addError(await errorMessage(r));
+    loadDocuments();
+  });
+
   function iconFor(name) {
+    name = name.toLowerCase();
     if (name.endsWith('.pdf'))  return '📕';
     if (name.endsWith('.docx')) return '📘';
     if (name.endsWith('.md'))   return '📝';
@@ -456,11 +494,21 @@
   dropzone.addEventListener('drop', e => {
     e.preventDefault();
     dropzone.classList.remove('drag-over');
-    if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+    uploadFiles(e.dataTransfer.files);
   });
-  fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+  fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
 
+  // Upload sequentially so progress messages stay readable and the server
+  // isn't asked to refit the index several times in parallel.
+  async function uploadFiles(fileList) {
+    const files = Array.from(fileList || []);
+    for (const file of files) await uploadFile(file);
+    fileInput.value = '';
+  }
+
+  let hideProgressTimer;
   async function uploadFile(file) {
+    clearTimeout(hideProgressTimer);
     uploadProgress.textContent = `Indexing "${file.name}"…`;
     uploadProgress.classList.add('visible');
 
@@ -468,24 +516,24 @@
     form.append('file', file);
 
     try {
-      const r    = await fetch(`${API}/upload`, { method: 'POST', body: form });
+      const r = await fetch(`${API}/upload`, { method: 'POST', body: form });
+      if (!r.ok) throw new Error(await errorMessage(r));
       const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || 'Upload failed');
-      uploadProgress.textContent = `✓ Indexed ${data.chunks} chunks from "${file.name}"`;
+      uploadProgress.textContent = `✓ ${data.message}`;
       loadDocuments();
       hideWelcome();
     } catch (err) {
       uploadProgress.textContent = `✗ ${err.message}`;
     }
 
-    setTimeout(() => uploadProgress.classList.remove('visible'), 3000);
-    fileInput.value = '';
+    hideProgressTimer = setTimeout(() => uploadProgress.classList.remove('visible'), 3000);
   }
 
   // ── Clear documents ─────────────────────────────────────────────────────────
   clearBtn.addEventListener('click', async () => {
     if (!confirm('Remove all indexed documents?')) return;
-    await fetch(`${API}/documents`, { method: 'DELETE' });
+    const r = await fetch(`${API}/documents`, { method: 'DELETE' });
+    if (!r.ok) addError(await errorMessage(r));
     loadDocuments();
   });
 
@@ -500,7 +548,9 @@
     div.className = `message ${role}`;
     div.innerHTML = `
       <div class="message-role">${role === 'user' ? 'You' : 'Claude'}</div>
-      <div class="bubble">${escHtml(text)}</div>
+      ${role === 'assistant'
+          ? `<div class="bubble md">${renderMarkdown(text)}</div>`
+          : `<div class="bubble">${escHtml(text)}</div>`}
       ${sources.length ? `<div class="sources">${sources.map(s =>
         `<span class="source-chip">📄 ${escHtml(s)}</span>`).join('')}</div>` : ''}`;
     messages.appendChild(div);
@@ -529,7 +579,59 @@
   }
 
   function escHtml(str) {
-    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return String(str ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // FastAPI's `detail` is a string for HTTPException but an array for 422 validation errors.
+  async function errorMessage(res) {
+    const body = await res.json().catch(() => ({}));
+    const d = body.detail;
+    if (Array.isArray(d)) return d.map(e => e.msg || JSON.stringify(e)).join('; ');
+    return d || `Request failed (${res.status})`;
+  }
+
+  // Minimal, safe markdown for Claude's answers: everything is HTML-escaped FIRST,
+  // then a small set of patterns (lists, headings, **bold**, `code`, citations) is
+  // turned into markup. No raw HTML from the model ever reaches the DOM.
+  function inlineMd(s) {
+    return s
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\((Source[s]?:[^)]+)\)/g, '<span class="cite">($1)</span>');
+  }
+
+  function renderMarkdown(text) {
+    const lines = escHtml(text).split('\n');
+    const out = [];
+    let list = null;   // 'ul' | 'ol' | null
+    let para = [];
+    const flushPara = () => { if (para.length) { out.push(`<p>${inlineMd(para.join('<br>'))}</p>`); para = []; } };
+    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      const ul = line.match(/^\s*[-*•]\s+(.*)$/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      const h  = line.match(/^#{1,4}\s+(.*)$/);
+      if (ul || ol) {
+        flushPara();
+        const type = ul ? 'ul' : 'ol';
+        if (list !== type) { closeList(); out.push(`<${type}>`); list = type; }
+        out.push(`<li>${inlineMd((ul || ol)[1])}</li>`);
+      } else if (h) {
+        flushPara(); closeList();
+        out.push(`<h4>${inlineMd(h[1])}</h4>`);
+      } else if (!line.trim()) {
+        flushPara(); closeList();
+      } else {
+        closeList();
+        para.push(line);
+      }
+    }
+    flushPara(); closeList();
+    return out.join('');
   }
 
   async function sendQuestion() {
@@ -549,9 +651,9 @@
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ question: q }),
       });
+      if (!r.ok) throw new Error(await errorMessage(r));
       const data = await r.json();
       thinking.remove();
-      if (!r.ok) throw new Error(data.detail || 'Query failed');
       addMessage('assistant', data.answer, data.sources);
     } catch (err) {
       thinking.remove();
