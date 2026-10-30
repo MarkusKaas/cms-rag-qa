@@ -146,6 +146,21 @@ def list_documents() -> list[dict]:
     return list(seen.values())
 
 
+def delete_document(doc_id: str) -> int:
+    """
+    Remove all chunks belonging to a single document.
+    Returns the number of chunks removed, or 0 if the doc_id was not found.
+    """
+    global _docs
+    before = len(_docs)
+    _docs = [d for d in _docs if d["doc_id"] != doc_id]
+    removed = before - len(_docs)
+    if removed:
+        _save_store()
+        _rebuild_index()
+    return removed
+
+
 def delete_all_documents() -> int:
     """Wipe all stored documents and the index. Returns chunk count removed."""
     global _docs
