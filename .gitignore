@@ -1,19 +1,25 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 .venv/
 venv/
 env/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Environment
+# Environment / secrets
 .env
+.env.*
+!.env.example
 
-# ChromaDB data
-chroma_db/
+# Document store side files (atomic-write temp file, corrupt-store backups)
+backend/*.tmp
+backend/*.corrupt.json
 
 # Uploads
 uploads/
