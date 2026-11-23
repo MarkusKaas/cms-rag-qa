@@ -118,3 +118,27 @@ single seam for swapping in an embedding model or a managed vector DB.
 thread pool), the store is written atomically (temp file + `os.replace`), and the store path is
 resolved relative to `backend/` so it doesn't depend on the working directory.
 
+---
+
+### Update: heading-aware chunking
+
+**Decision:** Documents are first split into sections at markdown headings (and Word heading styles, which `.docx` extraction converts to `#` headings), then into word windows within each section. Each chunk stores its heading path, e.g. `Umbraco Delivery API › Authentication`, and that path is indexed along with the text. Line breaks are kept inside chunks.
+
+**Why:** Fixed word windows cut across unrelated sections, and a chunk like "Use an API key header" means little without its heading. Indexing the heading lets a question that matches a section title find that section. Showing it in the UI makes it obvious *where* an answer came from. Keeping line breaks keeps code blocks and tables readable for both the model and the user.
+
+**Trade-off:** Very short sections become small chunks. That is acceptable with TF-IDF, which already favours focused chunks.
+
+---
+
+### Update: streamed answers (Server-Sent Events)
+
+**Decision:** The UI calls `POST /query/stream`, which sends retrieval results first (`meta`), then the answer as it is generated (`delta`), then `done`, or `error`. The non-streaming `POST /query` stays for API clients and scripts.
+
+**Why:** A full Haiku answer takes 2–6 s. With streaming, the first words appear in well under a second, which makes the tool feel much faster without being faster. SSE over a plain `fetch()` was chosen over WebSockets: it is one-directional (all that's needed here), works through ordinary HTTP proxies, and needs no extra dependency on either side.
+
+---
+
+### Update: `pypdf` instead of `PyPDF2`
+
+`PyPDF2` is deprecated and receives no fixes; `pypdf` is its maintained successor with the same API. The extractor still falls back to `PyPDF2` if only that is installed, so existing environments keep working.
+
