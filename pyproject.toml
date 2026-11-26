@@ -1,0 +1,19 @@
+# Tooling config only — the app is run with uvicorn, not installed as a package.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["backend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "E402"]   # long prompt strings; load_dotenv() must run before some imports
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are designed to be used as argument defaults.
+extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "fastapi.Query"]
