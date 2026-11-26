@@ -71,7 +71,16 @@
       background: var(--muted);
       transition: background .3s;
     }
-    .status-dot.ok { background: var(--green); }
+    .status-dot.ok   { background: var(--green); }
+    .status-dot.warn { background: #e3b341; }
+    .status-dot.down { background: var(--red); }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .ghost-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 7px; padding: 4px 10px; font-size: .72rem; cursor: pointer;
+      font-family: var(--sans); transition: color .15s, border-color .15s;
+    }
+    .ghost-btn:hover { color: var(--txt); border-color: var(--accent); }
 
     /* ── Layout ── */
     .app {
@@ -344,6 +353,62 @@
     .send-btn:hover { background: var(--accent-lt); transform: translateY(-1px); }
     .send-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
     .send-btn svg { width: 16px; height: 16px; fill: #fff; }
+    /* Answer actions + retrieved passages */
+    .answer-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+    .mini-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      font-family: var(--mono); font-size: .66rem; padding: 3px 9px; border-radius: 20px;
+      cursor: pointer; transition: color .15s, border-color .15s;
+    }
+    .mini-btn:hover { color: var(--txt); border-color: var(--accent); }
+    .mini-btn[aria-expanded="true"] { color: var(--accent-lt); border-color: rgba(124,58,237,.5); }
+    .passages { display: none; flex-direction: column; gap: 8px; max-width: 780px; margin-top: 4px; }
+    .passages.open { display: flex; }
+    .passage {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; font-size: .78rem; color: var(--muted);
+    }
+    .passage-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .passage-src  { font-family: var(--mono); font-size: .68rem; color: var(--accent-lt); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .passage-sec  { font-size: .7rem; color: var(--txt); opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .score-bar { margin-left: auto; flex-shrink: 0; width: 60px; height: 4px; border-radius: 2px; background: var(--bg3); overflow: hidden; }
+    .score-bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-lt)); }
+    .score-num { font-family: var(--mono); font-size: .62rem; flex-shrink: 0; }
+    .passage-text {
+      line-height: 1.6; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .passage.expanded .passage-text { -webkit-line-clamp: unset; }
+    .passage { cursor: pointer; }
+
+    /* Streaming caret */
+    .bubble.streaming::after {
+      content: '▍'; color: var(--accent-lt); margin-left: 2px;
+      animation: blink 1s steps(2, start) infinite;
+    }
+    @keyframes blink { to { visibility: hidden; } }
+
+    /* Keyboard focus visibility */
+    button:focus-visible, .dropzone:focus-visible, .passage:focus-visible {
+      outline: 2px solid var(--accent-lt); outline-offset: 2px;
+    }
+
+    /* Narrow screens: sidebar stacks above the chat */
+    @media (max-width: 820px) {
+      body { height: auto; min-height: 100vh; overflow: auto; }
+      header { padding: 12px 16px; }
+      .logo-sub { display: none; }
+      .app { grid-template-columns: 1fr; overflow: visible; }
+      .sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: none; }
+      .doc-list { max-height: 180px; }
+      .chat-area { min-height: 70vh; }
+      .messages { padding: 20px 16px; }
+      .input-bar { padding: 12px 16px 18px; position: sticky; bottom: 0; }
+      .bubble { max-width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+
     .input-hint {
       font-family: var(--mono); font-size: .65rem;
       color: var(--muted); margin-top: 8px; text-align: center;
@@ -357,12 +422,15 @@
     <div class="logo-icon">🔍</div>
     <div>
       <div class="logo-text">CMS RAG Q&A</div>
-      <div class="logo-sub">Powered by Claude + ChromaDB</div>
+      <div class="logo-sub">Claude · TF-IDF retrieval</div>
     </div>
   </div>
-  <div class="status-pill">
-    <div class="status-dot" id="status-dot"></div>
-    <span id="status-text">Connecting…</span>
+  <div class="header-actions">
+    <button class="ghost-btn" id="new-chat-btn" title="Clear the conversation (documents are kept)">New chat</button>
+    <div class="status-pill" id="status-pill">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
   </div>
 </header>
 
@@ -372,7 +440,7 @@
   <aside class="sidebar">
     <div class="sidebar-section">
       <div class="sidebar-label">Upload Document</div>
-      <div class="dropzone" id="dropzone">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload documents">
         <div class="dropzone-icon">📄</div>
         <div class="dropzone-text">Drop a file or <span>browse</span></div>
         <div class="dropzone-types">.txt · .md · .pdf · .docx</div>
@@ -391,7 +459,7 @@
 
   <!-- ── Chat ── -->
   <div class="chat-area">
-    <div class="messages" id="messages">
+    <div class="messages" id="messages" aria-live="polite">
       <div class="welcome" id="welcome">
         <div class="welcome-icon">🏛️</div>
         <h2>Ask your documents anything</h2>
@@ -406,8 +474,8 @@
 
     <div class="input-bar">
       <div class="input-wrap">
-        <textarea id="question-input" rows="1" placeholder="Ask a question about your documents…"></textarea>
-        <button class="send-btn" id="send-btn" disabled>
+        <textarea id="question-input" rows="1" maxlength="1000" placeholder="Ask a question about your documents…" aria-label="Question"></textarea>
+        <button class="send-btn" id="send-btn" disabled aria-label="Send question">
           <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
@@ -434,16 +502,26 @@
 
   // ── Health check ────────────────────────────────────────────────────────────
   async function checkHealth() {
+    const pill = document.getElementById('status-pill');
     try {
       const r = await fetch(`${API}/health`);
-      if (r.ok) {
-        statusDot.classList.add('ok');
-        statusText.textContent = 'API connected';
-        sendBtn.disabled = false;
-        loadDocuments();
+      const h = await r.json();
+      const model = String(h.model || '').replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      if (h.anthropic_key_set === false) {
+        statusDot.className = 'status-dot warn';
+        statusText.textContent = 'API key missing';
+        pill.title = 'ANTHROPIC_API_KEY is not set on the server — uploads work, answers will fail.';
+      } else {
+        statusDot.className = 'status-dot ok';
+        statusText.textContent = model || 'API connected';
+        pill.title = `Backend ${h.version || ''} · ${h.indexed_chunks ?? 0} chunks indexed`;
       }
+      sendBtn.disabled = false;
+      loadDocuments();
     } catch {
+      statusDot.className = 'status-dot down';
       statusText.textContent = 'API offline';
+      pill.title = 'The backend is not reachable. Is uvicorn running?';
     }
   }
   checkHealth();
@@ -464,7 +542,7 @@
       <div class="doc-item">
         <span class="doc-icon">${iconFor(d.source)}</span>
         <span class="doc-name" title="${escHtml(d.source)}">${escHtml(d.source)}</span>
-        <span class="doc-meta">${d.chunks ?? ''}</span>
+        <span class="doc-meta" title="${d.chunks} chunks · ${(d.words ?? 0).toLocaleString()} words">${d.chunks ?? ''}</span>
         <button class="doc-del" data-id="${escHtml(d.doc_id)}" data-name="${escHtml(d.source)}"
                 title="Remove document" aria-label="Remove ${escHtml(d.source)}">×</button>
       </div>`).join('');
@@ -489,6 +567,7 @@
 
   // ── File upload ─────────────────────────────────────────────────────────────
   dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
   dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
   dropzone.addEventListener('drop', e => {
@@ -542,6 +621,12 @@
     if (welcome) welcome.style.display = 'none';
   }
 
+  function scrollToBottom() {
+    // Only follow the stream if the user hasn't scrolled up to read something.
+    const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+    if (nearBottom) messages.scrollTop = messages.scrollHeight;
+  }
+
   function addMessage(role, text, sources = []) {
     hideWelcome();
     const div = document.createElement('div');
@@ -558,16 +643,8 @@
     return div;
   }
 
-  function addError(text) {
-    hideWelcome();
-    const div = document.createElement('div');
-    div.className = 'message assistant error';
-    div.innerHTML = `<div class="message-role">Error</div><div class="bubble">${escHtml(text)}</div>`;
-    messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
-  }
-
-  function addThinking() {
+  // An assistant message that fills in as the answer streams.
+  function addStreamingMessage() {
     hideWelcome();
     const div = document.createElement('div');
     div.className = 'message assistant';
@@ -575,7 +652,88 @@
       <div class="thinking"><span></span><span></span><span></span></div>`;
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
-    return div;
+
+    let bubble = null, text = '', frame = 0;
+    return {
+      append(delta) {
+        if (!bubble) {
+          div.querySelector('.thinking').remove();
+          bubble = document.createElement('div');
+          bubble.className = 'bubble md streaming';
+          div.appendChild(bubble);
+        }
+        text += delta;
+        // Re-render at most once per animation frame — markdown parsing per token is wasteful.
+        if (!frame) frame = requestAnimationFrame(() => { frame = 0; bubble.innerHTML = renderMarkdown(text); scrollToBottom(); });
+      },
+      finish(sources, chunks) {
+        cancelAnimationFrame(frame);
+        if (!bubble) { this.append(''); cancelAnimationFrame(frame); }
+        bubble.innerHTML = renderMarkdown(text);
+        bubble.classList.remove('streaming');
+        div.insertAdjacentHTML('beforeend', renderFooter(sources, chunks));
+        wireFooter(div, text);
+        scrollToBottom();
+      },
+      fail(message) {
+        div.remove();
+        addError(message);
+      },
+      get started() { return bubble !== null; },
+    };
+  }
+
+  function renderFooter(sources, chunks) {
+    const chips = sources.length ? `<div class="sources">${sources.map(s => {
+      const sections = [...new Set(chunks.filter(c => c.source === s && c.heading).map(c => c.heading))];
+      return `<span class="source-chip" title="${escHtml(sections.join('\n'))}">📄 ${escHtml(s)}</span>`;
+    }).join('')}</div>` : '';
+    const maxScore = Math.max(...chunks.map(c => c.score), 0.0001);
+    const passages = chunks.length ? `
+      <div class="passages">${chunks.map(c => `
+        <div class="passage" tabindex="0" title="Click to expand">
+          <div class="passage-head">
+            <span class="passage-src">${escHtml(c.source)}</span>
+            ${c.heading ? `<span class="passage-sec" title="${escHtml(c.heading)}">› ${escHtml(c.heading.split(' › ').slice(-2).join(' › '))}</span>` : ''}
+            <span class="score-bar" aria-hidden="true"><i style="width:${Math.round((c.score / maxScore) * 100)}%"></i></span>
+            <span class="score-num">${Number(c.score).toFixed(2)}</span>
+          </div>
+          <div class="passage-text">${escHtml(c.text)}</div>
+        </div>`).join('')}
+      </div>` : '';
+    return `${chips}
+      <div class="answer-actions">
+        <button class="mini-btn copy-btn">Copy</button>
+        ${chunks.length ? `<button class="mini-btn passages-btn" aria-expanded="false">${chunks.length} passage${chunks.length === 1 ? '' : 's'} used</button>` : ''}
+      </div>
+      ${passages}`;
+  }
+
+  function wireFooter(div, text) {
+    div.querySelector('.copy-btn')?.addEventListener('click', async e => {
+      try { await navigator.clipboard.writeText(text); e.target.textContent = 'Copied ✓'; }
+      catch { e.target.textContent = 'Copy failed'; }
+      setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+    });
+    const toggle = div.querySelector('.passages-btn');
+    toggle?.addEventListener('click', () => {
+      const open = div.querySelector('.passages').classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    div.querySelectorAll('.passage').forEach(p => {
+      const flip = () => p.classList.toggle('expanded');
+      p.addEventListener('click', flip);
+      p.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+    });
+  }
+
+  function addError(text) {
+    hideWelcome();
+    const div = document.createElement('div');
+    div.className = 'message assistant error';
+    div.innerHTML = `<div class="message-role">Error</div><div class="bubble">${escHtml(text)}</div>`;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
   }
 
   function escHtml(str) {
@@ -634,35 +792,75 @@
     return out.join('');
   }
 
+  // Parse a Server-Sent Events stream from a fetch() response body.
+  async function* readEvents(response) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        let event = 'message', data = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7);
+          else if (line.startsWith('data: ')) data += line.slice(6);
+        }
+        yield { event, data: data ? JSON.parse(data) : {} };
+      }
+    }
+  }
+
+  let busy = false;
+
   async function sendQuestion() {
     const q = questionInput.value.trim();
-    if (!q) return;
+    if (!q || busy) return;
+    busy = true;
 
     addMessage('user', q);
     questionInput.value = '';
     questionInput.style.height = 'auto';
     sendBtn.disabled = true;
 
-    const thinking = addThinking();
+    const msg = addStreamingMessage();
+    let meta = { sources: [], chunks: [] };
 
     try {
-      const r = await fetch(`${API}/query`, {
+      const r = await fetch(`${API}/query/stream`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ question: q }),
       });
       if (!r.ok) throw new Error(await errorMessage(r));
-      const data = await r.json();
-      thinking.remove();
-      addMessage('assistant', data.answer, data.sources);
-    } catch (err) {
-      thinking.remove();
-      addError(err.message);
-    }
 
-    sendBtn.disabled = false;
-    questionInput.focus();
+      let finished = false;
+      for await (const { event, data } of readEvents(r)) {
+        if (event === 'meta')  meta = data;
+        if (event === 'delta') msg.append(data.text);
+        if (event === 'error') throw new Error(data.detail || 'Generation failed.');
+        if (event === 'done')  { finished = true; break; }
+      }
+      if (!finished) throw new Error('The connection closed before the answer was complete.');
+      msg.finish(meta.sources || [], meta.chunks || []);
+    } catch (err) {
+      msg.fail(err.message);
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      questionInput.focus();
+    }
   }
+
+  document.getElementById('new-chat-btn').addEventListener('click', () => {
+    messages.querySelectorAll('.message').forEach(m => m.remove());
+    if (welcome) welcome.style.display = '';
+    questionInput.focus();
+  });
 
   sendBtn.addEventListener('click', sendQuestion);
   questionInput.addEventListener('keydown', e => {
