@@ -12,9 +12,11 @@ Built as part of a thesis on AI-in-CMS patterns — with Umbraco as the primary 
 |------------|----------------------------------------|
 | Retrieval  | scikit-learn TF-IDF (1–2-grams) + cosine similarity |
 | Storage    | JSON file (`backend/docs_store.json`, atomic writes) |
-| Generation | Claude Haiku (`claude-haiku-4-5-20251001`) via Anthropic API |
+| Extraction | `pypdf` (PDF), `python-docx` (Word, headings preserved) |
+| Generation | Claude Haiku (`claude-haiku-4-5-20251001`) via Anthropic API, streamed |
 | Backend    | FastAPI + uvicorn                      |
 | Frontend   | Single-file HTML/CSS/JS (no build step) |
+| Tests      | pytest, offline (Claude stubbed)       |
 
 See [`DECISIONS.md`](DECISIONS.md) for why each technology was chosen.
 
@@ -89,7 +91,8 @@ The FastAPI server exposes these endpoints (interactive docs at `/docs`):
 | Method   | Path          | Description                         |
 |----------|---------------|-------------------------------------|
 | `POST`   | `/upload`     | Upload and index a document         |
-| `POST`   | `/query`      | Ask a question, get a cited answer  |
+| `POST`   | `/query`      | Ask a question, get a cited answer as JSON |
+| `POST`   | `/query/stream` | Same, streamed as Server-Sent Events (used by the UI) |
 | `GET`    | `/documents`  | List all indexed documents          |
 | `DELETE` | `/documents`  | Wipe all indexed documents          |
 | `DELETE` | `/documents/{doc_id}` | Remove a single document    |
@@ -101,7 +104,14 @@ The FastAPI server exposes these endpoints (interactive docs at `/docs`):
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What is the Delivery API base URL?"}'
+
+# Streamed: prints `event: meta`, then `event: delta` chunks, then `event: done`
+curl -N -X POST http://localhost:8000/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I authenticate against the Delivery API?"}'
 ```
+
+Each retrieved chunk in the response includes `source`, `heading` (the section it came from, e.g. `Umbraco Delivery API › Authentication`) and its similarity `score`.
 
 ---
 
@@ -112,18 +122,21 @@ cms-rag-qa/
 ├── backend/
 │   ├── main.py         # FastAPI app, routes, static serving
 │   ├── ingest.py       # Extract → chunk → TF-IDF index → store (thread-safe)
-│   ├── retriever.py    # Retrieval entry point (swap point for a vector DB)
+│   ├── retriever.py    # Retrieval seam: a Retriever protocol, swap point for a vector DB
 │   └── generator.py    # Claude answer generation
 ├── frontend/
 │   └── index.html      # Single-file dark-theme UI
 ├── tests/
-│   └── test_rag.py     # Offline tests (Claude stubbed, temp store)
+│   ├── conftest.py     # Redirects the store to a temp dir, stubs the API key
+│   └── test_rag.py     # Offline tests (Claude stubbed)
 ├── sample_docs/
 │   └── umbraco_sample.md  # Test document (Umbraco reference)
 ├── .env.example
 ├── .gitignore
 ├── DECISIONS.md        # Architectural decision log
+├── pyproject.toml      # pytest + ruff config
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 
@@ -146,18 +159,19 @@ GENERATOR_MODEL=claude-haiku-4-5-20251001
 
 `CHUNK_OVERLAP` must be smaller than `CHUNK_SIZE` — the app refuses to start otherwise.
 
-Re-uploading a file with the same name replaces the earlier version rather than indexing it twice.
+Re-uploading a file with the same name replaces the earlier version rather than indexing it twice. Re-uploading an *identical* file is detected by content hash and skipped.
 
 ---
 
 ## Tests
 
 ```bash
-pip install pytest
-pytest
+pip install -r requirements-dev.txt
+pytest                      # 25 tests
+ruff check backend tests    # lint
 ```
 
-Claude is stubbed and the store is redirected to a temp file, so tests need no API key and never touch your data.
+Claude is stubbed and the store is redirected to a temp file, so tests need no API key and never touch your data. CI runs both on Python 3.11 and 3.13.
 
 ---
 
@@ -170,7 +184,11 @@ Upload document
 Extract text (.txt/.md/.pdf/.docx)
      │
      ▼
-Split into overlapping word chunks
+Split into sections by heading (#, ##, … / Word heading styles)
+     │
+     ▼
+Split each section into overlapping word chunks
+(line breaks kept; each chunk remembers its heading path)
      │
      ▼
 Refit TF-IDF index over all chunks
@@ -190,11 +208,12 @@ Cosine similarity → top-k chunks
 (no relevant chunks → answer without calling Claude)
      │
      ▼
-Claude Haiku generates grounded answer
-with source citations
+Claude Haiku generates a grounded answer
+with source citations, streamed token by token
      │
      ▼
-Display answer + source chips in UI
+UI renders it live, then shows source chips and
+the retrieved passages with their scores
 ```
 
 ---
